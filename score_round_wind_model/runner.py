@@ -11,7 +11,7 @@ from typing import Any
 from score_round_wind_model.athena_io import (
     build_scored_rounds_storage_location_template,
     build_scored_rounds_table_location,
-    ensure_scored_rounds_table,
+    recreate_scored_rounds_table,
 )
 from score_round_wind_model.config import load_config
 from score_round_wind_model.dynamo_io import (
@@ -25,7 +25,10 @@ from score_round_wind_model.gold_io import (
 )
 from score_round_wind_model.model_io import load_model_bundle
 from score_round_wind_model.parquet_io import overwrite_event_scored_rounds
-from score_round_wind_model.scoring import score_round_rows
+from score_round_wind_model.scoring import (
+    compute_scoring_request_fingerprint,
+    score_round_rows,
+)
 
 logger = logging.getLogger("score_round_wind_model")
 
@@ -161,6 +164,10 @@ def _prefilter_event_objects(
                 "event_id": _event_id_from_key(str(obj["key"])),
                 "event_year": _event_year_from_key(str(obj["key"])),
                 "event_object": obj,
+                "scoring_request_fingerprint": compute_scoring_request_fingerprint(
+                    event_object=obj,
+                    training_request_fingerprint=training_request_fingerprint,
+                ),
             }
             for obj in event_objects
         ]
@@ -201,6 +208,10 @@ def _prefilter_event_objects(
                 "event_id": event_id,
                 "event_year": event_year,
                 "event_object": obj,
+                "scoring_request_fingerprint": compute_scoring_request_fingerprint(
+                    event_object=obj,
+                    training_request_fingerprint=training_request_fingerprint,
+                ),
             }
         )
 
@@ -316,7 +327,7 @@ def main() -> int:
 
         if not args.dry_run and selected_events:
             t3 = time.perf_counter()
-            ensure_result = ensure_scored_rounds_table(
+            recreate_result = recreate_scored_rounds_table(
                 database=athena_database,
                 table_name=source_table,
                 workgroup=athena_workgroup,
@@ -325,13 +336,17 @@ def main() -> int:
                 storage_location_template=build_scored_rounds_storage_location_template(bucket=bucket),
                 aws_region=cfg.aws_region,
             )
-            stats.athena_queries_executed += 1
-            stats.athena_scanned_bytes += int(ensure_result.get("scanned_bytes", 0) or 0)
+            stats.athena_queries_executed += int(recreate_result.get("queries_executed", 0) or 0)
+            stats.athena_scanned_bytes += int(recreate_result.get("scanned_bytes", 0) or 0)
             _log_phase_timing(
                 run_id=run_id,
-                phase="ensure_scored_rounds_table",
+                phase="recreate_scored_rounds_table",
                 started_at=t3,
-                extra={"table_name": source_table},
+                extra={
+                    "table_name": source_table,
+                    "drop_query_execution_id": recreate_result.get("drop_query_execution_id", ""),
+                    "create_query_execution_id": recreate_result.get("create_query_execution_id", ""),
+                },
             )
 
         for idx, selected in enumerate(selected_events, start=1):
@@ -341,6 +356,7 @@ def main() -> int:
             event_year = int(selected["event_year"])
             event_object = selected["event_object"]
             event_key = str(event_object["key"])
+            scoring_request_fingerprint = str(selected["scoring_request_fingerprint"])
 
             try:
                 t_event_load = time.perf_counter()
@@ -364,7 +380,7 @@ def main() -> int:
                     training_request_fingerprint=training_request_fingerprint,
                     scoring_run_id=run_id,
                     scored_at_utc=scored_at_utc,
-                    scoring_request_fingerprint="",
+                    scoring_request_fingerprint=scoring_request_fingerprint,
                     model_artifact_prefix=model_bundle["artifact_prefix"],
                 )
                 _log_phase_timing(
@@ -405,6 +421,7 @@ def main() -> int:
                             "model_name": scoring_result.scoring_manifest["model_name"],
                             "model_version": scoring_result.scoring_manifest["model_version"],
                             "model_artifact_prefix": model_bundle["artifact_prefix"],
+                            "scoring_request_fingerprint": scoring_request_fingerprint,
                         },
                     )
 
@@ -446,6 +463,7 @@ def main() -> int:
                             extra_attributes={
                                 "event_year": event_year,
                                 "error_message": str(exc),
+                                "scoring_request_fingerprint": scoring_request_fingerprint,
                             },
                         )
                 except Exception:

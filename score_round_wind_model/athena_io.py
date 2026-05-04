@@ -24,6 +24,10 @@ def build_scored_rounds_storage_location_template(*, bucket: str) -> str:
     )
 
 
+def build_drop_table_sql(*, database: str, table_name: str) -> str:
+    return f"DROP TABLE IF EXISTS {database}.{table_name}"
+
+
 def build_create_scored_rounds_table_sql(
     *,
     database: str,
@@ -36,8 +40,8 @@ def build_create_scored_rounds_table_sql(
     tourn_id_max: int = 2000000,
 ) -> str:
     return f"""
-CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{table_name} (
-  round_number int,
+CREATE EXTERNAL TABLE {database}.{table_name} (
+  round_number bigint,
   player_key string,
   player_name string,
   division string,
@@ -54,20 +58,25 @@ CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{table_name} (
   layout_name string,
   lat double,
   lon double,
-  actual_round_strokes double,
-  round_strokes_over_par double,
+  actual_round_strokes bigint,
+  round_strokes_over_par bigint,
   weather_available_flag boolean,
-  hole_count int,
+  hole_count bigint,
   round_total_hole_length double,
   round_avg_hole_length double,
-  round_total_par double,
+  round_total_par bigint,
   round_avg_hole_par double,
   round_length_over_par double,
   round_wind_speed_mps_mean double,
+  round_wind_speed_mps_max double,
   round_wind_gust_mps_mean double,
+  round_wind_gust_mps_max double,
   round_temp_c_mean double,
   round_precip_mm_sum double,
-  precip_during_round_flag int,
+  round_precip_mm_mean double,
+  round_pressure_hpa_mean double,
+  round_humidity_pct_mean double,
+  precip_during_round_flag bigint,
   predicted_round_strokes double,
   predicted_round_strokes_wind_reference double,
   predicted_round_strokes_temperature_reference double,
@@ -88,7 +97,7 @@ CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{table_name} (
   round_wind_gust_bucket string
 )
 PARTITIONED BY (
-  event_year int,
+  event_year integer,
   tourn_id bigint
 )
 STORED AS PARQUET
@@ -187,7 +196,7 @@ def execute_athena_query(
     return result
 
 
-def ensure_scored_rounds_table(
+def recreate_scored_rounds_table(
     *,
     database: str,
     table_name: str,
@@ -201,7 +210,16 @@ def ensure_scored_rounds_table(
     tourn_id_min: int = 1,
     tourn_id_max: int = 2000000,
 ) -> dict[str, Any]:
-    sql = build_create_scored_rounds_table_sql(
+    drop_sql = build_drop_table_sql(database=database, table_name=table_name)
+    drop_result = execute_athena_query(
+        sql=drop_sql,
+        database=database,
+        workgroup=workgroup,
+        output_location=output_location,
+        aws_region=aws_region,
+    )
+
+    create_sql = build_create_scored_rounds_table_sql(
         database=database,
         table_name=table_name,
         table_location=table_location,
@@ -211,18 +229,21 @@ def ensure_scored_rounds_table(
         tourn_id_min=tourn_id_min,
         tourn_id_max=tourn_id_max,
     )
-    result = execute_athena_query(
-        sql=sql,
+    create_result = execute_athena_query(
+        sql=create_sql,
         database=database,
         workgroup=workgroup,
         output_location=output_location,
         aws_region=aws_region,
     )
-    result.update(
-        {
-            "table_name": table_name,
-            "table_location": table_location,
-            "storage_location_template": storage_location_template,
-        }
-    )
-    return result
+
+    return {
+        "table_name": table_name,
+        "table_location": table_location,
+        "storage_location_template": storage_location_template,
+        "queries_executed": 2,
+        "scanned_bytes": int(drop_result.get("scanned_bytes", 0) or 0)
+        + int(create_result.get("scanned_bytes", 0) or 0),
+        "drop_query_execution_id": drop_result["query_execution_id"],
+        "create_query_execution_id": create_result["query_execution_id"],
+    }

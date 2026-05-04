@@ -49,6 +49,7 @@ def test_prefilter_event_objects_skips_success_and_failed_by_default(monkeypatch
     assert skipped_failed == 1
     assert len(selected) == 1
     assert selected[0]["event_id"] == 90010
+    assert selected[0]["scoring_request_fingerprint"]
 
 
 def test_prefilter_event_objects_includes_failed_when_enabled(monkeypatch):
@@ -182,6 +183,7 @@ def test_main_scores_selected_events_only_without_partition_registration(monkeyp
             "size": 123,
             "last_modified": "2026-05-01T12:00:00Z",
         },
+        "scoring_request_fingerprint": "score-fp-1",
     }
 
     monkeypatch.setattr(runner, "parse_args", lambda: args)
@@ -224,10 +226,12 @@ def test_main_scores_selected_events_only_without_partition_registration(monkeyp
     )
     monkeypatch.setattr(
         runner,
-        "ensure_scored_rounds_table",
+        "recreate_scored_rounds_table",
         lambda **kwargs: {
-            "query_execution_id": "qe-create",
+            "queries_executed": 2,
             "scanned_bytes": 0,
+            "drop_query_execution_id": "qe-drop",
+            "create_query_execution_id": "qe-create",
         },
     )
     monkeypatch.setattr(
@@ -287,7 +291,8 @@ def test_main_scores_selected_events_only_without_partition_registration(monkeyp
     assert len(checkpoint_calls) == 1
     assert checkpoint_calls[0]["status"] == "success"
     assert checkpoint_calls[0]["extra_attributes"]["rows_scored"] == 1
+    assert checkpoint_calls[0]["extra_attributes"]["scoring_request_fingerprint"] == "score-fp-1"
     assert len(run_summary_calls) == 1
     assert run_summary_calls[0]["stats"]["candidate_events"] == 1
     assert run_summary_calls[0]["stats"]["selected_events"] == 1
-    assert run_summary_calls[0]["stats"]["athena_queries_executed"] == 1
+    assert run_summary_calls[0]["stats"]["athena_queries_executed"] == 2
