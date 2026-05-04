@@ -18,6 +18,10 @@ def _ddb_resource(aws_region: Optional[str]):
     return boto3.resource("dynamodb", region_name=aws_region) if aws_region else boto3.resource("dynamodb")
 
 
+def _ddb_client(aws_region: Optional[str]):
+    return boto3.client("dynamodb", region_name=aws_region) if aws_region else boto3.client("dynamodb")
+
+
 def _to_dynamodb_safe(value: Any) -> Any:
     if value is None:
         return None
@@ -59,6 +63,67 @@ def get_score_checkpoint(
         ConsistentRead=False,
     )
     return resp.get("Item")
+
+
+def get_score_checkpoints(
+    *,
+    table_name: str,
+    event_ids: list[int],
+    training_request_fingerprint: str,
+    aws_region: Optional[str],
+) -> dict[int, dict[str, Any]]:
+    client = _ddb_client(aws_region)
+    unique_event_ids = sorted({int(x) for x in event_ids})
+    out: dict[int, dict[str, Any]] = {}
+
+    for start in range(0, len(unique_event_ids), 100):
+        chunk = unique_event_ids[start : start + 100]
+        request_items = {
+            table_name: {
+                "Keys": [
+                    {
+                        "pk": {"S": SCORE_CHECKPOINT_PK},
+                        "sk": {"S": f"EVENT#{event_id}#MODEL#{training_request_fingerprint}"},
+                    }
+                    for event_id in chunk
+                ]
+            }
+        }
+
+        resp = client.batch_get_item(RequestItems=request_items)
+        items = resp.get("Responses", {}).get(table_name, [])
+
+        for item in items:
+            event_id_raw = item.get("event_id", {}).get("N")
+            if event_id_raw is None:
+                continue
+
+            event_id = int(event_id_raw)
+            decoded = {
+                "pk": item.get("pk", {}).get("S", ""),
+                "sk": item.get("sk", {}).get("S", ""),
+                "pipeline": item.get("pipeline", {}).get("S", ""),
+                "event_id": event_id,
+                "training_request_fingerprint": item.get("training_request_fingerprint", {}).get("S", ""),
+                "status": item.get("status", {}).get("S", ""),
+                "last_run_id": item.get("last_run_id", {}).get("S", ""),
+                "updated_at": item.get("updated_at", {}).get("S", ""),
+                "scoring_request_fingerprint": item.get("scoring_request_fingerprint", {}).get("S", ""),
+            }
+
+            for key, value in item.items():
+                if key in decoded:
+                    continue
+                if "S" in value:
+                    decoded[key] = value["S"]
+                elif "N" in value:
+                    decoded[key] = Decimal(value["N"])
+                elif "BOOL" in value:
+                    decoded[key] = value["BOOL"]
+
+            out[event_id] = decoded
+
+    return out
 
 
 def put_score_checkpoint(
