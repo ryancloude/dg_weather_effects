@@ -117,7 +117,6 @@ class PipelineJob(Construct):
         account = settings.aws_region  # placeholder to satisfy linting; replaced below
         del account
 
-        # S3 access to the primary project bucket.
         role.add_to_policy(
             iam.PolicyStatement(
                 sid="PrimaryDataBucketAccess",
@@ -135,7 +134,6 @@ class PipelineJob(Construct):
             )
         )
 
-        # DynamoDB access to the existing project metadata/checkpoint table.
         role.add_to_policy(
             iam.PolicyStatement(
                 sid="ProjectMetadataTableAccess",
@@ -164,6 +162,7 @@ class PipelineJob(Construct):
                     actions=[
                         "athena:GetQueryExecution",
                         "athena:GetQueryResults",
+                        "athena:GetWorkGroup",
                         "athena:StartQueryExecution",
                         "athena:StopQueryExecution",
                     ],
@@ -189,11 +188,12 @@ class PipelineJob(Construct):
                     iam.PolicyStatement(
                         sid="AthenaResultsBucketAccess",
                         actions=[
-                            "s3:GetObject",
-                            "s3:PutObject",
-                            "s3:DeleteObject",
                             "s3:AbortMultipartUpload",
+                            "s3:GetBucketLocation",
+                            "s3:GetObject",
                             "s3:ListBucket",
+                            "s3:ListMultipartUploadParts",
+                            "s3:PutObject",
                         ],
                         resources=[
                             f"arn:aws:s3:::{data_access.athena_results_bucket_name}",

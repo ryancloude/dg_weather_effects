@@ -33,9 +33,9 @@ class PipelineOrchestrationStack(Stack):
         self.shared = shared
 
         data_access = PipelineDataAccess(
-            data_bucket_name=settings.pdga_s3_bucket,
-            data_table_name=settings.pdga_ddb_table,
-            athena_results_bucket_name=settings.athena_results_bucket,
+            data_bucket_name=shared.bronze_bucket.bucket_name,
+            data_table_name=shared.event_index_table.table_name,
+            athena_results_bucket_name=shared.athena_results_bucket.bucket_name,
         )
 
         self.jobs = {
@@ -259,14 +259,22 @@ class PipelineOrchestrationStack(Stack):
         step = tasks.EcsRunTask(
             self,
             definition.state_id,
+            integration_pattern=sfn.IntegrationPattern.RUN_JOB,
             cluster=self.shared.cluster,
             task_definition=job.task_definition,
-            integration_pattern=sfn.IntegrationPattern.RUN_JOB,
-            assign_public_ip=True,
-            subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
             launch_target=tasks.EcsFargateLaunchTarget(
-                platform_version=ecs.FargatePlatformVersion.LATEST,
+                platform_version=ecs.FargatePlatformVersion.LATEST
             ),
+            assign_public_ip=True,
+            security_groups=[
+                ec2.SecurityGroup(
+                    self,
+                    f"{definition.state_id}SecurityGroup",
+                    vpc=self.shared.vpc,
+                    allow_all_outbound=True,
+                )
+            ],
+            subnets=ec2.SubnetSelection(subnets=self.shared.vpc.public_subnets),
             container_overrides=[
                 tasks.ContainerOverride(
                     container_definition=job.container,
@@ -300,14 +308,12 @@ class PipelineOrchestrationStack(Stack):
                 )
             ],
             result_path=sfn.JsonPath.DISCARD,
-            task_timeout=sfn.Timeout.duration(
-                Duration.minutes(definition.timeout_minutes)
-            ),
+            timeout=Duration.minutes(definition.timeout_minutes),
         )
         step.add_retry(
             errors=["States.ALL"],
             interval=Duration.seconds(30),
-            backoff_rate=2.0,
             max_attempts=3,
+            backoff_rate=2.0,
         )
         return step
