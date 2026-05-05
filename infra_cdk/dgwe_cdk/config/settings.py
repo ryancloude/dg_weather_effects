@@ -16,6 +16,7 @@ class PipelineSettings:
     image_tag: str
     log_level: str
     schedule_expression: str
+    weekly_retrain_schedule_expression: str
     pdga_s3_bucket: str
     pdga_ddb_table: str
     pdga_ddb_status_end_date_gsi: str
@@ -43,8 +44,16 @@ class PipelineSettings:
         return f"{self.resource_prefix}-incremental"
 
     @property
+    def weekly_retrain_pipeline_name(self) -> str:
+        return f"{self.resource_prefix}-weekly-retrain"
+
+    @property
     def state_machine_name(self) -> str:
         return f"{self.resource_prefix}-incremental-pipeline"
+
+    @property
+    def weekly_retrain_state_machine_name(self) -> str:
+        return f"{self.resource_prefix}-weekly-retrain-pipeline"
 
     @property
     def cluster_name(self) -> str:
@@ -95,6 +104,10 @@ class PipelineSettings:
             image_tag=resolve("PIPELINE_IMAGE_TAG", "latest"),
             log_level=resolve("PIPELINE_LOG_LEVEL", "INFO"),
             schedule_expression=resolve("PIPELINE_SCHEDULE_EXPRESSION", "rate(1 day)"),
+            weekly_retrain_schedule_expression=resolve(
+                "PIPELINE_WEEKLY_RETRAIN_SCHEDULE_EXPRESSION",
+                "cron(0 12 ? * SUN *)",
+            ),
             pdga_s3_bucket=resolve("PDGA_S3_BUCKET"),
             pdga_ddb_table=resolve("PDGA_DDB_TABLE"),
             pdga_ddb_status_end_date_gsi=resolve(

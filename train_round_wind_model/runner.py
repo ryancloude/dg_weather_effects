@@ -15,6 +15,7 @@ from train_round_wind_model.dynamo_io import (
 )
 from train_round_wind_model.gold_io import load_model_input_round_dataframe
 from train_round_wind_model.models import MODEL_NAME, MODEL_VERSION
+from train_round_wind_model.ssm_io import put_string_parameter
 from train_round_wind_model.training import (
     compute_dataset_fingerprint,
     compute_training_request_fingerprint,
@@ -62,6 +63,15 @@ def parse_args():
     p.add_argument("--ddb-table", help="Override DynamoDB table")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force-train", action="store_true")
+    p.add_argument(
+        "--set-production-fingerprint",
+        action="store_true",
+        help="Write the resulting training_request_fingerprint to the configured production SSM parameter.",
+    )
+    p.add_argument(
+        "--production-fingerprint-parameter-name",
+        help="Exact SSM parameter name to update when --set-production-fingerprint is used.",
+    )
     p.add_argument("--log-level", default="INFO")
     return p.parse_args()
 
@@ -79,6 +89,55 @@ def _log_phase_timing(*, run_id: str, phase: str, started_at: float, extra: dict
         payload.update(extra)
     logger.info("train_round_wind_model_phase_complete", extra=payload)
     print({"train_round_wind_model_phase_complete": payload})
+
+
+def _resolve_production_parameter_name(args: argparse.Namespace) -> str | None:
+    raw = getattr(args, "production_fingerprint_parameter_name", None)
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
+def _maybe_update_production_fingerprint(
+    *,
+    args: argparse.Namespace,
+    aws_region: str | None,
+    run_id: str,
+    training_request_fingerprint: str,
+) -> dict[str, str | int] | None:
+    if not bool(getattr(args, "set_production_fingerprint", False)):
+        return None
+
+    parameter_name = _resolve_production_parameter_name(args)
+    if not parameter_name:
+        raise ValueError(
+            "--production-fingerprint-parameter-name is required when --set-production-fingerprint is used."
+        )
+
+    if bool(getattr(args, "dry_run", False)):
+        return {
+            "parameter_name": parameter_name,
+            "version": 0,
+            "value": training_request_fingerprint,
+        }
+
+    started = time.perf_counter()
+    result = put_string_parameter(
+        parameter_name=parameter_name,
+        value=training_request_fingerprint,
+        aws_region=aws_region,
+    )
+    _log_phase_timing(
+        run_id=run_id,
+        phase="set_production_training_request_fingerprint",
+        started_at=started,
+        extra={
+            "parameter_name": result["parameter_name"],
+            "version": result["version"],
+        },
+    )
+    return result
 
 
 def main() -> int:
@@ -136,6 +195,7 @@ def main() -> int:
                 "training_request_fingerprint": training_request_fingerprint,
                 "dry_run": bool(args.dry_run),
                 "force_train": bool(args.force_train),
+                "set_production_fingerprint": bool(args.set_production_fingerprint),
             },
         )
         print(
@@ -149,6 +209,7 @@ def main() -> int:
                     "training_request_fingerprint": training_request_fingerprint,
                     "dry_run": bool(args.dry_run),
                     "force_train": bool(args.force_train),
+                    "set_production_fingerprint": bool(args.set_production_fingerprint),
                 }
             }
         )
@@ -167,6 +228,26 @@ def main() -> int:
             and str(checkpoint.get("status", "")).strip().lower() == "success"
         ):
             stats.skipped_unchanged_trainings += 1
+
+            production_result = _maybe_update_production_fingerprint(
+                args=args,
+                aws_region=cfg.aws_region,
+                run_id=run_id,
+                training_request_fingerprint=training_request_fingerprint,
+            )
+
+            summary = {
+                "run_id": run_id,
+                "model_name": MODEL_NAME,
+                "model_version": MODEL_VERSION,
+                "training_request_fingerprint": training_request_fingerprint,
+                "production_fingerprint_updated": bool(production_result),
+                "production_fingerprint_parameter_name": (
+                    production_result["parameter_name"] if production_result else ""
+                ),
+                **stats.to_dict(),
+            }
+
             logger.info(
                 "train_round_wind_model_skipped_unchanged",
                 extra={
@@ -174,19 +255,13 @@ def main() -> int:
                     "training_request_fingerprint": training_request_fingerprint,
                 },
             )
-            print(
-                {
-                    "train_round_wind_model_summary": {
-                        "run_id": run_id,
-                        **stats.to_dict(),
-                    }
-                }
-            )
+            print({"train_round_wind_model_summary": summary})
+
             if not args.dry_run:
                 put_training_run_summary(
                     table_name=ddb_table,
                     run_id=run_id,
-                    stats=stats.to_dict(),
+                    stats=summary,
                     aws_region=cfg.aws_region,
                 )
             return 0
@@ -259,12 +334,23 @@ def main() -> int:
             )
             _log_phase_timing(run_id=run_id, phase="put_training_checkpoint", started_at=t5)
 
+        production_result = _maybe_update_production_fingerprint(
+            args=args,
+            aws_region=cfg.aws_region,
+            run_id=run_id,
+            training_request_fingerprint=training_request_fingerprint,
+        )
+
         summary = {
             "run_id": run_id,
             "model_name": MODEL_NAME,
             "model_version": MODEL_VERSION,
             "training_request_fingerprint": training_request_fingerprint,
             "artifact_prefix": artifact_keys.get("artifact_prefix", ""),
+            "production_fingerprint_updated": bool(production_result),
+            "production_fingerprint_parameter_name": (
+                production_result["parameter_name"] if production_result else ""
+            ),
             **stats.to_dict(),
             **result.metrics,
         }

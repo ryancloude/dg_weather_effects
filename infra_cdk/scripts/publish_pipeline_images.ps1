@@ -88,6 +88,11 @@ $jobs = @(
         Dockerfile = "docker/dockerfiles/Dockerfile.gold_wind_model_inputs"
     },
     @{
+        JobName    = "train_round_wind_model"
+        Repository = "dgwe/train-round-wind-model"
+        Dockerfile = "docker/dockerfiles/Dockerfile.train_round_wind_model"
+    },
+    @{
         JobName    = "score_round_wind_model"
         Repository = "dgwe/score-round-wind-model"
         Dockerfile = "docker/dockerfiles/Dockerfile.score_round_wind_model"

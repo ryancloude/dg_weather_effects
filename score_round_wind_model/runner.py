@@ -11,9 +11,10 @@ from typing import Any
 from score_round_wind_model.athena_io import (
     build_scored_rounds_storage_location_template,
     build_scored_rounds_table_location,
+    discover_scored_round_projection_bounds,
     recreate_scored_rounds_table,
 )
-from score_round_wind_model.config import load_config
+from score_round_wind_model.config import Config, load_config
 from score_round_wind_model.dynamo_io import (
     get_score_checkpoints,
     put_score_checkpoint,
@@ -63,10 +64,22 @@ class RunStats:
             "athena_scanned_bytes": self.athena_scanned_bytes,
         }
 
+    def failure_rate(self) -> float:
+        if self.attempted_events <= 0:
+            return 0.0
+        return self.failed_events / self.attempted_events
+
 
 def make_run_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"score-round-wind-model-{ts}"
+
+
+def probability(value: str) -> float:
+    parsed = float(value)
+    if not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError("value must be between 0.0 and 1.0")
+    return parsed
 
 
 def parse_args():
@@ -75,8 +88,7 @@ def parse_args():
     )
     p.add_argument(
         "--training-request-fingerprint",
-        required=True,
-        help="Required training artifact fingerprint from train_round_wind_model.",
+        help="Optional training artifact fingerprint. If omitted, uses PRODUCTION_TRAINING_REQUEST_FINGERPRINT.",
     )
     p.add_argument("--event-ids", help="Optional comma-separated event IDs")
     p.add_argument("--bucket", help="Override S3 bucket")
@@ -92,6 +104,12 @@ def parse_args():
         action="store_true",
         help="Include events whose most recent checkpoint status is failed.",
     )
+    p.add_argument(
+        "--max-failure-rate",
+        type=probability,
+        default=0.5,
+        help="Exit non-zero only when failed events are greater than this fraction of attempted events.",
+    )
     p.add_argument("--progress-every", type=int, default=25)
     p.add_argument("--log-level", default="INFO")
     return p.parse_args()
@@ -101,6 +119,21 @@ def parse_event_ids(raw: str | None) -> list[int] | None:
     if not raw:
         return None
     return [int(x.strip()) for x in raw.split(",") if x.strip()]
+
+
+def _resolve_training_request_fingerprint(args: argparse.Namespace, cfg: Config) -> str:
+    cli_value = str(getattr(args, "training_request_fingerprint", "") or "").strip()
+    if cli_value:
+        return cli_value
+
+    env_value = str(cfg.production_training_request_fingerprint or "").strip()
+    if env_value:
+        return env_value
+
+    raise ValueError(
+        "No training fingerprint was provided. Pass --training-request-fingerprint or set "
+        "PRODUCTION_TRAINING_REQUEST_FINGERPRINT."
+    )
 
 
 def _log_phase_timing(*, run_id: str, phase: str, started_at: float, extra: dict | None = None) -> None:
@@ -218,6 +251,50 @@ def _prefilter_event_objects(
     return selected, skipped_success, skipped_failed
 
 
+def _merge_projection_bounds(
+    *,
+    discovered_bounds: dict[str, int],
+    selected_events: list[dict[str, Any]],
+) -> dict[str, int]:
+    years: list[int] = []
+    event_ids: list[int] = []
+
+    if discovered_bounds:
+        years.extend(
+            [
+                int(discovered_bounds["event_year_start"]),
+                int(discovered_bounds["event_year_end"]),
+            ]
+        )
+        event_ids.extend(
+            [
+                int(discovered_bounds["tourn_id_min"]),
+                int(discovered_bounds["tourn_id_max"]),
+            ]
+        )
+
+    for item in selected_events:
+        years.append(int(item["event_year"]))
+        event_ids.append(int(item["event_id"]))
+
+    if not years:
+        years.append(datetime.now(timezone.utc).year)
+
+    if not event_ids:
+        event_ids.append(1)
+
+    return {
+        "event_year_start": min(years),
+        "event_year_end": max(years),
+        "tourn_id_min": min(event_ids),
+        "tourn_id_max": max(event_ids),
+    }
+
+
+def _should_exit_nonzero(*, stats: RunStats, max_failure_rate: float) -> bool:
+    return stats.failure_rate() > max_failure_rate
+
+
 def main() -> int:
     args = parse_args()
 
@@ -234,11 +311,12 @@ def main() -> int:
     athena_results_s3_uri = args.athena_results_s3_uri or cfg.athena_results_s3_uri
     source_table = args.source_table or cfg.athena_source_scored_table
     event_ids = parse_event_ids(args.event_ids)
+    max_failure_rate = float(getattr(args, "max_failure_rate", 0.5))
 
     run_id = make_run_id()
     stats = RunStats()
     progress_every = max(int(args.progress_every), 1)
-    training_request_fingerprint = args.training_request_fingerprint
+    training_request_fingerprint = _resolve_training_request_fingerprint(args, cfg)
 
     try:
         t0 = time.perf_counter()
@@ -307,6 +385,7 @@ def main() -> int:
                 "dry_run": bool(args.dry_run),
                 "force_events": bool(args.force_events),
                 "include_failures": bool(args.include_failures),
+                "max_failure_rate": max_failure_rate,
             },
         )
         print(
@@ -321,12 +400,29 @@ def main() -> int:
                     "dry_run": bool(args.dry_run),
                     "force_events": bool(args.force_events),
                     "include_failures": bool(args.include_failures),
+                    "max_failure_rate": max_failure_rate,
                 }
             }
         )
 
         if not args.dry_run and selected_events:
             t3 = time.perf_counter()
+            discovered_bounds = discover_scored_round_projection_bounds(
+                bucket=bucket,
+                aws_region=cfg.aws_region,
+            )
+            projection_bounds = _merge_projection_bounds(
+                discovered_bounds=discovered_bounds,
+                selected_events=selected_events,
+            )
+            _log_phase_timing(
+                run_id=run_id,
+                phase="discover_projection_bounds",
+                started_at=t3,
+                extra=projection_bounds,
+            )
+
+            t4 = time.perf_counter()
             recreate_result = recreate_scored_rounds_table(
                 database=athena_database,
                 table_name=source_table,
@@ -335,17 +431,19 @@ def main() -> int:
                 table_location=build_scored_rounds_table_location(bucket=bucket),
                 storage_location_template=build_scored_rounds_storage_location_template(bucket=bucket),
                 aws_region=cfg.aws_region,
+                **projection_bounds,
             )
             stats.athena_queries_executed += int(recreate_result.get("queries_executed", 0) or 0)
             stats.athena_scanned_bytes += int(recreate_result.get("scanned_bytes", 0) or 0)
             _log_phase_timing(
                 run_id=run_id,
                 phase="recreate_scored_rounds_table",
-                started_at=t3,
+                started_at=t4,
                 extra={
                     "table_name": source_table,
                     "drop_query_execution_id": recreate_result.get("drop_query_execution_id", ""),
                     "create_query_execution_id": recreate_result.get("create_query_execution_id", ""),
+                    **projection_bounds,
                 },
             )
 
@@ -478,14 +576,20 @@ def main() -> int:
                     "processed_events": idx,
                     "total_events": len(selected_events),
                     **stats.to_dict(),
+                    "failure_rate": round(stats.failure_rate(), 4),
+                    "max_failure_rate": max_failure_rate,
                 }
                 logger.info("score_round_wind_model_progress", extra=progress)
                 print({"score_round_wind_model_progress": progress})
 
+        exit_nonzero = _should_exit_nonzero(stats=stats, max_failure_rate=max_failure_rate)
         summary = {
             "run_id": run_id,
             "training_request_fingerprint": training_request_fingerprint,
             **stats.to_dict(),
+            "failure_rate": round(stats.failure_rate(), 4),
+            "max_failure_rate": max_failure_rate,
+            "exit_nonzero": exit_nonzero,
         }
         logger.info("score_round_wind_model_summary", extra=summary)
         print({"score_round_wind_model_summary": summary})
@@ -498,7 +602,7 @@ def main() -> int:
                 aws_region=cfg.aws_region,
             )
 
-        return 0 if stats.failed_events == 0 else 2
+        return 2 if exit_nonzero else 0
 
     except Exception as exc:
         logger.exception(
@@ -515,6 +619,9 @@ def main() -> int:
                     "run_id": run_id,
                     "training_request_fingerprint": training_request_fingerprint,
                     **stats.to_dict(),
+                    "failure_rate": round(stats.failure_rate(), 4),
+                    "max_failure_rate": max_failure_rate,
+                    "exit_nonzero": True,
                     "error_message": str(exc),
                 }
             }
@@ -528,6 +635,9 @@ def main() -> int:
                     stats={
                         "training_request_fingerprint": training_request_fingerprint,
                         **stats.to_dict(),
+                        "failure_rate": round(stats.failure_rate(), 4),
+                        "max_failure_rate": max_failure_rate,
+                        "exit_nonzero": True,
                         "error_message": str(exc),
                     },
                     aws_region=cfg.aws_region,

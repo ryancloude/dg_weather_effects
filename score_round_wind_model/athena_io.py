@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -8,8 +9,16 @@ import boto3
 from score_round_wind_model.models import SCORED_ROUNDS_PREFIX
 
 
+_EVENT_YEAR_PREFIX_RE = re.compile(r"event_year=(\d+)/$")
+_EVENT_ID_PREFIX_RE = re.compile(r"tourn_id=(\d+)/$")
+
+
 def _athena_client(aws_region: str | None):
     return boto3.client("athena", region_name=aws_region) if aws_region else boto3.client("athena")
+
+
+def _s3_client(aws_region: str | None):
+    return boto3.client("s3", region_name=aws_region) if aws_region else boto3.client("s3")
 
 
 def build_scored_rounds_table_location(*, bucket: str) -> str:
@@ -26,6 +35,68 @@ def build_scored_rounds_storage_location_template(*, bucket: str) -> str:
 
 def build_drop_table_sql(*, database: str, table_name: str) -> str:
     return f"DROP TABLE IF EXISTS {database}.{table_name}"
+
+
+def _list_common_prefixes(
+    *,
+    bucket: str,
+    prefix: str,
+    aws_region: str | None,
+) -> list[str]:
+    client = _s3_client(aws_region)
+    paginator = client.get_paginator("list_objects_v2")
+
+    prefixes: list[str] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        for item in page.get("CommonPrefixes", []):
+            value = str(item.get("Prefix", "")).strip()
+            if value:
+                prefixes.append(value)
+    return prefixes
+
+
+def discover_scored_round_projection_bounds(
+    *,
+    bucket: str,
+    aws_region: str | None,
+    prefix: str = SCORED_ROUNDS_PREFIX,
+) -> dict[str, int]:
+    year_prefixes = _list_common_prefixes(
+        bucket=bucket,
+        prefix=prefix,
+        aws_region=aws_region,
+    )
+
+    years: list[int] = []
+    event_ids: list[int] = []
+
+    for year_prefix in year_prefixes:
+        year_match = _EVENT_YEAR_PREFIX_RE.search(year_prefix)
+        if not year_match:
+            continue
+
+        years.append(int(year_match.group(1)))
+
+        event_prefixes = _list_common_prefixes(
+            bucket=bucket,
+            prefix=year_prefix,
+            aws_region=aws_region,
+        )
+        for event_prefix in event_prefixes:
+            event_match = _EVENT_ID_PREFIX_RE.search(event_prefix)
+            if not event_match:
+                continue
+            event_ids.append(int(event_match.group(1)))
+
+    if not years or not event_ids:
+        return {}
+
+    return {
+        "event_year_start": min(years),
+        "event_year_end": max(years),
+        "tourn_id_min": min(event_ids),
+        "tourn_id_max": max(event_ids),
+    }
 
 
 def build_create_scored_rounds_table_sql(

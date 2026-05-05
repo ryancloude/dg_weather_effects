@@ -20,6 +20,7 @@ class Config:
     athena_results_s3_uri: str
     athena_source_scored_table: str = "scored_rounds"
     aws_region: str | None = None
+    production_training_request_fingerprint: str | None = None
 
 
 def load_config() -> Config:
@@ -31,4 +32,5 @@ def load_config() -> Config:
         athena_results_s3_uri=os.environ["ATHENA_RESULTS_S3_URI"],
         athena_source_scored_table=os.getenv("ATHENA_SOURCE_SCORED_TABLE", "scored_rounds"),
         aws_region=os.getenv("AWS_REGION"),
+        production_training_request_fingerprint=os.getenv("PRODUCTION_TRAINING_REQUEST_FINGERPRINT"),
     )

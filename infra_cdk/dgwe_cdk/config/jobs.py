@@ -28,6 +28,11 @@ REPORTING_ENV_KEYS: Final[tuple[str, ...]] = (
     "ATHENA_REPORTING_BASE_TABLE",
 )
 
+SCORING_ENV_KEYS: Final[tuple[str, ...]] = (
+    *REPORTING_ENV_KEYS,
+    "PRODUCTION_TRAINING_REQUEST_FINGERPRINT",
+)
+
 
 @dataclass(frozen=True)
 class PipelineJobDefinition:
@@ -41,6 +46,7 @@ class PipelineJobDefinition:
     default_command: tuple[str, ...]
     env_keys: tuple[str, ...]
     needs_athena: bool = False
+    ssm_write_parameter_keys: tuple[str, ...] = ()
 
 
 JOB_DEFINITIONS: Final[tuple[PipelineJobDefinition, ...]] = (
@@ -70,7 +76,7 @@ JOB_DEFINITIONS: Final[tuple[PipelineJobDefinition, ...]] = (
         cpu=512,
         memory_mib=1024,
         timeout_minutes=120,
-        default_command=("--historical-backfill","--log-level", "INFO"),
+        default_command=("--historical-backfill", "--log-level", "INFO"),
         env_keys=COMMON_ENV_KEYS,
     ),
     PipelineJobDefinition(
@@ -140,6 +146,18 @@ JOB_DEFINITIONS: Final[tuple[PipelineJobDefinition, ...]] = (
         env_keys=COMMON_ENV_KEYS,
     ),
     PipelineJobDefinition(
+        job_name="train_round_wind_model",
+        state_id="TrainRoundWindModel",
+        ecr_repo_name="dgwe/train-round-wind-model",
+        container_name="train-round-wind-model",
+        cpu=2048,
+        memory_mib=4096,
+        timeout_minutes=300,
+        default_command=("--log-level", "INFO"),
+        env_keys=COMMON_ENV_KEYS,
+        ssm_write_parameter_keys=("PRODUCTION_TRAINING_REQUEST_FINGERPRINT",),
+    ),
+    PipelineJobDefinition(
         job_name="score_round_wind_model",
         state_id="ScoreRoundWindModel",
         ecr_repo_name="dgwe/score-round-wind-model",
@@ -148,7 +166,7 @@ JOB_DEFINITIONS: Final[tuple[PipelineJobDefinition, ...]] = (
         memory_mib=4096,
         timeout_minutes=300,
         default_command=("--log-level", "INFO"),
-        env_keys=REPORTING_ENV_KEYS,
+        env_keys=SCORING_ENV_KEYS,
         needs_athena=True,
     ),
     PipelineJobDefinition(
@@ -164,4 +182,3 @@ JOB_DEFINITIONS: Final[tuple[PipelineJobDefinition, ...]] = (
         needs_athena=True,
     ),
 )
-

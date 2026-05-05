@@ -51,23 +51,40 @@ class PipelineOrchestrationStack(Stack):
             for definition in JOB_DEFINITIONS
         }
 
-        self.state_machine_log_group = logs.LogGroup(
+        self.incremental_state_machine_log_group = logs.LogGroup(
             self,
             "StateMachineLogGroup",
             log_group_name=f"/{settings.resource_prefix}/step-functions/incremental",
             retention=logs.RetentionDays.ONE_MONTH,
         )
 
-        definition = self._build_state_machine_definition()
+        incremental_definition = self._build_pipeline_definition(
+            definition_prefix="Incremental",
+            pipeline_name=settings.pipeline_name,
+            job_names=[
+                "ingest_pdga_event_pages",
+                "ingest_pdga_live_results",
+                "silver_pdga_live_results",
+                "ingest_weather_observations",
+                "silver_weather_observations",
+                "silver_weather_enriched",
+                "gold_wind_effects",
+                "gold_wind_model_inputs",
+                "score_round_wind_model",
+                "report_round_weather_impacts",
+            ],
+            full_refresh=False,
+            command_mode="incremental",
+        )
 
         self.state_machine = sfn.StateMachine(
             self,
             "IncrementalPipelineStateMachine",
             state_machine_name=settings.state_machine_name,
-            definition_body=sfn.DefinitionBody.from_chainable(definition),
+            definition_body=sfn.DefinitionBody.from_chainable(incremental_definition),
             timeout=Duration.hours(6),
             logs=sfn.LogOptions(
-                destination=self.state_machine_log_group,
+                destination=self.incremental_state_machine_log_group,
                 level=sfn.LogLevel.ALL,
                 include_execution_data=True,
             ),
@@ -91,13 +108,71 @@ class PipelineOrchestrationStack(Stack):
             )
         )
 
-    def _build_state_machine_definition(self) -> sfn.IChainable:
+        self.weekly_retrain_state_machine_log_group = logs.LogGroup(
+            self,
+            "WeeklyRetrainStateMachineLogGroup",
+            log_group_name=f"/{settings.resource_prefix}/step-functions/weekly-retrain",
+            retention=logs.RetentionDays.ONE_MONTH,
+        )
+
+        weekly_definition = self._build_pipeline_definition(
+            definition_prefix="WeeklyRetrain",
+            pipeline_name=settings.weekly_retrain_pipeline_name,
+            job_names=[
+                "train_round_wind_model",
+                "score_round_wind_model",
+                "report_round_weather_impacts",
+            ],
+            full_refresh=True,
+            command_mode="weekly_retrain",
+        )
+
+        self.weekly_retrain_state_machine = sfn.StateMachine(
+            self,
+            "WeeklyRetrainPipelineStateMachine",
+            state_machine_name=settings.weekly_retrain_state_machine_name,
+            definition_body=sfn.DefinitionBody.from_chainable(weekly_definition),
+            timeout=Duration.hours(8),
+            logs=sfn.LogOptions(
+                destination=self.weekly_retrain_state_machine_log_group,
+                level=sfn.LogLevel.ALL,
+                include_execution_data=True,
+            ),
+            tracing_enabled=True,
+        )
+
+        self.weekly_retrain_schedule_rule = events.Rule(
+            self,
+            "WeeklyRetrainScheduleRule",
+            schedule=events.Schedule.expression(settings.weekly_retrain_schedule_expression),
+        )
+        self.weekly_retrain_schedule_rule.add_target(
+            targets.SfnStateMachine(
+                self.weekly_retrain_state_machine,
+                input=events.RuleTargetInput.from_object(
+                    {
+                        "trigger": "eventbridge",
+                        "pipeline_mode": "weekly_retrain",
+                    }
+                ),
+            )
+        )
+
+    def _build_pipeline_definition(
+        self,
+        *,
+        definition_prefix: str,
+        pipeline_name: str,
+        job_names: list[str],
+        full_refresh: bool,
+        command_mode: str,
+    ) -> sfn.IChainable:
         initialize_context = sfn.Pass(
             self,
-            "InitializeContext",
+            f"{definition_prefix}InitializeContext",
             parameters={
                 "run_id.$": "States.UUID()",
-                "pipeline_name": self.settings.pipeline_name,
+                "pipeline_name": pipeline_name,
                 "app_env": self.settings.app_env,
                 "log_level": self.settings.log_level,
                 "execution_ts.$": "$$.Execution.StartTime",
@@ -107,7 +182,7 @@ class PipelineOrchestrationStack(Stack):
 
         mark_failed = tasks.DynamoUpdateItem(
             self,
-            "MarkRunFailed",
+            f"{definition_prefix}MarkRunFailed",
             table=self.shared.pipeline_runs_table,
             key={
                 "run_id": tasks.DynamoAttributeValue.from_string(
@@ -138,8 +213,8 @@ class PipelineOrchestrationStack(Stack):
 
         fail_state = sfn.Fail(
             self,
-            "PipelineFailed",
-            cause="Incremental pipeline failed",
+            f"{definition_prefix}PipelineFailed",
+            cause=f"{pipeline_name} failed",
             error="PipelineFailed",
         )
 
@@ -147,7 +222,7 @@ class PipelineOrchestrationStack(Stack):
 
         initialize_run = tasks.DynamoPutItem(
             self,
-            "InitializeRun",
+            f"{definition_prefix}InitializeRun",
             table=self.shared.pipeline_runs_table,
             item={
                 "run_id": tasks.DynamoAttributeValue.from_string(
@@ -171,39 +246,22 @@ class PipelineOrchestrationStack(Stack):
         )
         initialize_run.add_catch(failure_chain, result_path="$.error_info")
 
-        ingest_event_pages = self._ecs_step("ingest_pdga_event_pages")
-        ingest_event_pages.add_catch(failure_chain, result_path="$.error_info")
+        chain = initialize_context.next(initialize_run)
 
-        ingest_live_results = self._ecs_step("ingest_pdga_live_results")
-        ingest_live_results.add_catch(failure_chain, result_path="$.error_info")
-
-        silver_live_results = self._ecs_step("silver_pdga_live_results")
-        silver_live_results.add_catch(failure_chain, result_path="$.error_info")
-
-        ingest_weather = self._ecs_step("ingest_weather_observations")
-        ingest_weather.add_catch(failure_chain, result_path="$.error_info")
-
-        silver_weather = self._ecs_step("silver_weather_observations")
-        silver_weather.add_catch(failure_chain, result_path="$.error_info")
-
-        silver_weather_enriched = self._ecs_step("silver_weather_enriched")
-        silver_weather_enriched.add_catch(failure_chain, result_path="$.error_info")
-
-        gold_wind_effects = self._ecs_step("gold_wind_effects")
-        gold_wind_effects.add_catch(failure_chain, result_path="$.error_info")
-
-        gold_wind_model_inputs = self._ecs_step("gold_wind_model_inputs")
-        gold_wind_model_inputs.add_catch(failure_chain, result_path="$.error_info")
-
-        score_round_wind_model = self._ecs_step("score_round_wind_model")
-        score_round_wind_model.add_catch(failure_chain, result_path="$.error_info")
-
-        report_round_weather_impacts = self._ecs_step("report_round_weather_impacts")
-        report_round_weather_impacts.add_catch(failure_chain, result_path="$.error_info")
+        for job_name in job_names:
+            definition = self.jobs[job_name].definition
+            step = self._ecs_step(
+                job_name,
+                step_id=f"{definition_prefix}{definition.state_id}",
+                command=self._build_command(definition, mode=command_mode),
+                full_refresh=full_refresh,
+            )
+            step.add_catch(failure_chain, result_path="$.error_info")
+            chain = chain.next(step)
 
         mark_succeeded = tasks.DynamoUpdateItem(
             self,
-            "MarkRunSucceeded",
+            f"{definition_prefix}MarkRunSucceeded",
             table=self.shared.pipeline_runs_table,
             key={
                 "run_id": tasks.DynamoAttributeValue.from_string(
@@ -224,41 +282,50 @@ class PipelineOrchestrationStack(Stack):
         )
         mark_succeeded.add_catch(failure_chain, result_path="$.error_info")
 
-        done = sfn.Succeed(self, "PipelineSucceeded")
+        done = sfn.Succeed(self, f"{definition_prefix}PipelineSucceeded")
 
-        return (
-            initialize_context
-            .next(initialize_run)
-            .next(ingest_event_pages)
-            .next(ingest_live_results)
-            .next(silver_live_results)
-            .next(ingest_weather)
-            .next(silver_weather)
-            .next(silver_weather_enriched)
-            .next(gold_wind_effects)
-            .next(gold_wind_model_inputs)
-            .next(score_round_wind_model)
-            .next(report_round_weather_impacts)
-            .next(mark_succeeded)
-            .next(done)
-        )
+        return chain.next(mark_succeeded).next(done)
 
-    def _build_command(self, definition: PipelineJobDefinition) -> list[str]:
-        if definition.job_name == "score_round_wind_model":
-            return [
-                "--training-request-fingerprint",
-                self.settings.production_training_request_fingerprint,
-                *definition.default_command,
-            ]
-        return list(definition.default_command)
+    def _build_command(
+        self,
+        definition: PipelineJobDefinition,
+        *,
+        mode: str,
+    ) -> list[str]:
+        base = list(definition.default_command)
 
-    def _ecs_step(self, job_name: str) -> tasks.EcsRunTask:
+        if mode == "incremental":
+            return base
+
+        if mode == "weekly_retrain":
+            if definition.job_name == "train_round_wind_model":
+                return [
+                    "--force-train",
+                    "--set-production-fingerprint",
+                    "--production-fingerprint-parameter-name",
+                    self.settings.parameter_name("PRODUCTION_TRAINING_REQUEST_FINGERPRINT"),
+                    *base,
+                ]
+            if definition.job_name == "score_round_wind_model":
+                return ["--force-events", *base]
+            return base
+
+        raise ValueError(f"Unsupported command mode: {mode}")
+
+    def _ecs_step(
+        self,
+        job_name: str,
+        *,
+        step_id: str,
+        command: list[str],
+        full_refresh: bool,
+    ) -> tasks.EcsRunTask:
         job = self.jobs[job_name]
         definition: PipelineJobDefinition = job.definition
 
-        step = tasks.EcsRunTask(
+        return tasks.EcsRunTask(
             self,
-            definition.state_id,
+            step_id,
             integration_pattern=sfn.IntegrationPattern.RUN_JOB,
             cluster=self.shared.cluster,
             task_definition=job.task_definition,
@@ -269,7 +336,7 @@ class PipelineOrchestrationStack(Stack):
             security_groups=[
                 ec2.SecurityGroup(
                     self,
-                    f"{definition.state_id}SecurityGroup",
+                    f"{step_id}SecurityGroup",
                     vpc=self.shared.vpc,
                     allow_all_outbound=True,
                 )
@@ -278,7 +345,7 @@ class PipelineOrchestrationStack(Stack):
             container_overrides=[
                 tasks.ContainerOverride(
                     container_definition=job.container,
-                    command=self._build_command(definition),
+                    command=command,
                     environment=[
                         tasks.TaskEnvironmentVariable(
                             name="RUN_ID",
@@ -302,7 +369,7 @@ class PipelineOrchestrationStack(Stack):
                         ),
                         tasks.TaskEnvironmentVariable(
                             name="FULL_REFRESH",
-                            value="false",
+                            value="true" if full_refresh else "false",
                         ),
                     ],
                 )
@@ -310,10 +377,3 @@ class PipelineOrchestrationStack(Stack):
             result_path=sfn.JsonPath.DISCARD,
             timeout=Duration.minutes(definition.timeout_minutes),
         )
-        step.add_retry(
-            errors=["States.ALL"],
-            interval=Duration.seconds(30),
-            max_attempts=3,
-            backoff_rate=2.0,
-        )
-        return step

@@ -68,6 +68,7 @@ class PipelineJob(Construct):
             data_access=data_access,
             definition=definition,
             role=self.task_role,
+            config_parameters=config_parameters,
         )
 
         self.task_definition = ecs.FargateTaskDefinition(
@@ -113,8 +114,9 @@ class PipelineJob(Construct):
         data_access: PipelineDataAccess,
         definition: PipelineJobDefinition,
         role: iam.Role,
+        config_parameters: dict[str, ssm.IStringParameter],
     ) -> None:
-        account = settings.aws_region  # placeholder to satisfy linting; replaced below
+        account = settings.aws_region
         del account
 
         role.add_to_policy(
@@ -155,6 +157,10 @@ class PipelineJob(Construct):
             )
         )
 
+        if definition.ssm_write_parameter_keys:
+            for parameter_key in definition.ssm_write_parameter_keys:
+                config_parameters[parameter_key].grant_write(role)
+
         if definition.needs_athena:
             role.add_to_policy(
                 iam.PolicyStatement(
@@ -181,6 +187,21 @@ class PipelineJob(Construct):
                         "glue:GetPartitions",
                     ],
                     resources=["*"],
+                )
+            )
+            role.add_to_policy(
+                iam.PolicyStatement(
+                    sid="GlueTableWriteAccess",
+                    actions=[
+                        "glue:CreateTable",
+                        "glue:DeleteTable",
+                        "glue:UpdateTable",
+                    ],
+                    resources=[
+                        f"arn:aws:glue:{settings.aws_region}:*:catalog",
+                        f"arn:aws:glue:{settings.aws_region}:*:database/{settings.athena_database}",
+                        f"arn:aws:glue:{settings.aws_region}:*:table/{settings.athena_database}/*",
+                    ],
                 )
             )
             if data_access.athena_results_bucket_name:
