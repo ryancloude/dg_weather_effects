@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -73,6 +75,13 @@ class RunStats:
 def make_run_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"score-round-wind-model-{ts}"
+
+
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 
 def probability(value: str) -> float:
@@ -295,6 +304,52 @@ def _should_exit_nonzero(*, stats: RunStats, max_failure_rate: float) -> bool:
     return stats.failure_rate() > max_failure_rate
 
 
+def _build_metric_accumulator() -> dict[str, float | int]:
+    return {
+        "metric_rows": 0,
+        "abs_error_sum": 0.0,
+        "squared_error_sum": 0.0,
+    }
+
+
+def _accumulate_run_error_metrics(
+    *,
+    scored_df,
+    accumulator: dict[str, float | int],
+) -> None:
+    required_columns = {"actual_round_strokes", "predicted_round_strokes"}
+    if not required_columns.issubset(set(scored_df.columns)):
+        return
+
+    metric_df = scored_df[["actual_round_strokes", "predicted_round_strokes"]].dropna()
+    if metric_df.empty:
+        return
+
+    errors = metric_df["predicted_round_strokes"] - metric_df["actual_round_strokes"]
+    accumulator["metric_rows"] += int(len(metric_df))
+    accumulator["abs_error_sum"] += float(errors.abs().sum())
+    accumulator["squared_error_sum"] += float((errors ** 2).sum())
+
+
+def _finalize_run_error_metrics(accumulator: dict[str, float | int]) -> dict[str, float | int | None]:
+    metric_rows = int(accumulator["metric_rows"])
+    if metric_rows <= 0:
+        return {
+            "metric_rows": 0,
+            "mae": None,
+            "rmse": None,
+        }
+
+    abs_error_sum = float(accumulator["abs_error_sum"])
+    squared_error_sum = float(accumulator["squared_error_sum"])
+
+    return {
+        "metric_rows": metric_rows,
+        "mae": round(abs_error_sum / metric_rows, 4),
+        "rmse": round(math.sqrt(squared_error_sum / metric_rows), 4),
+    }
+
+
 def main() -> int:
     args = parse_args()
 
@@ -313,8 +368,9 @@ def main() -> int:
     event_ids = parse_event_ids(args.event_ids)
     max_failure_rate = float(getattr(args, "max_failure_rate", 0.5))
 
-    run_id = make_run_id()
+    run_id = resolve_run_id(make_run_id)
     stats = RunStats()
+    error_metrics = _build_metric_accumulator()
     progress_every = max(int(args.progress_every), 1)
     training_request_fingerprint = _resolve_training_request_fingerprint(args, cfg)
 
@@ -487,6 +543,10 @@ def main() -> int:
                     started_at=t_score,
                     extra={"event_id": event_id, "rows_scored": int(len(scoring_result.scored_df))},
                 )
+                _accumulate_run_error_metrics(
+                    scored_df=scoring_result.scored_df,
+                    accumulator=error_metrics,
+                )
 
                 scored_rounds_key = ""
 
@@ -583,10 +643,12 @@ def main() -> int:
                 print({"score_round_wind_model_progress": progress})
 
         exit_nonzero = _should_exit_nonzero(stats=stats, max_failure_rate=max_failure_rate)
+        run_error_summary = _finalize_run_error_metrics(error_metrics)
         summary = {
             "run_id": run_id,
             "training_request_fingerprint": training_request_fingerprint,
             **stats.to_dict(),
+            **run_error_summary,
             "failure_rate": round(stats.failure_rate(), 4),
             "max_failure_rate": max_failure_rate,
             "exit_nonzero": exit_nonzero,
@@ -613,12 +675,14 @@ def main() -> int:
                 "error": str(exc),
             },
         )
+        run_error_summary = _finalize_run_error_metrics(error_metrics)
         print(
             {
                 "score_round_wind_model_summary": {
                     "run_id": run_id,
                     "training_request_fingerprint": training_request_fingerprint,
                     **stats.to_dict(),
+                    **run_error_summary,
                     "failure_rate": round(stats.failure_rate(), 4),
                     "max_failure_rate": max_failure_rate,
                     "exit_nonzero": True,
@@ -635,6 +699,7 @@ def main() -> int:
                     stats={
                         "training_request_fingerprint": training_request_fingerprint,
                         **stats.to_dict(),
+                        **run_error_summary,
                         "failure_rate": round(stats.failure_rate(), 4),
                         "max_failure_rate": max_failure_rate,
                         "exit_nonzero": True,

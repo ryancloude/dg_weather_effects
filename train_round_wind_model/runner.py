@@ -5,7 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-
+import os
 from train_round_wind_model.artifact_io import write_training_artifacts
 from train_round_wind_model.config import load_config
 from train_round_wind_model.dynamo_io import (
@@ -55,6 +55,12 @@ def make_run_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"train-round-wind-model-{ts}"
 
+
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train the production round-level one-stage CatBoost wind model.")
@@ -153,7 +159,7 @@ def main() -> int:
     ddb_table = args.ddb_table or cfg.ddb_table
     event_ids = parse_event_ids(args.event_ids)
 
-    run_id = make_run_id()
+    run_id = resolve_run_id(make_run_id)
     stats = RunStats(attempted_trainings=1)
 
     try:

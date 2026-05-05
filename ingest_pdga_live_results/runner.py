@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable
 from urllib.parse import urlparse
 import boto3
-
 from ingest_pdga_event_pages.config import load_config
 from ingest_pdga_event_pages.http_client import HttpConfig, build_session, polite_sleep
 from ingest_pdga_live_results.dynamo_reader import LiveResultsTask, load_live_results_tasks
@@ -94,6 +94,12 @@ def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
     if parsed.scheme != "s3" or not parsed.netloc or not parsed.path:
         raise ValueError(f"Invalid S3 URI: {s3_uri}")
     return parsed.netloc, parsed.path.lstrip("/")
+
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 
 def load_event_ids_from_s3_uri(*, s3_uri: str, aws_region: str | None) -> list[int]:
@@ -382,7 +388,7 @@ def main() -> int:
 
     total_tasks = len(tasks)
     total_events = len({task.event_id for task in tasks})
-    run_id = make_run_id()
+    run_id = resolve_run_id(make_run_id)
 
     logger.info(
         "live_results_run_plan",

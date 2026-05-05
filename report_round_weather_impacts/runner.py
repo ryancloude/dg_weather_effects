@@ -6,6 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 
 from report_round_weather_impacts.athena_io import delete_s3_prefix, execute_athena_query
 from report_round_weather_impacts.config import load_config
@@ -47,6 +48,11 @@ def make_run_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"report-round-weather-impacts-{ts}"
 
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 def parse_args():
     p = argparse.ArgumentParser(description="Build dashboard reporting tables with Athena from scored round outputs.")
@@ -146,7 +152,8 @@ def main() -> int:
     base_table_name = _validate_identifier(args.base_table_name or cfg.athena_reporting_base_table, "base table name")
     selected_tables = parse_report_tables(args.tables)
 
-    run_id = make_run_id()
+    run_id = resolve_run_id(make_run_id)
+
     stats = RunStats()
 
     try:

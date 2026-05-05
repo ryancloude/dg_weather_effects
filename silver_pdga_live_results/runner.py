@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import dataclass
+import os
 from datetime import datetime, timezone
 from typing import Any
+
+
 
 from silver_pdga_live_results.config import load_config
 from silver_pdga_live_results.bronze_io import build_round_sources, compute_event_source_fingerprint
@@ -63,6 +66,11 @@ def make_run_id() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"silver-live-results-{ts}"
 
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 def probability(value: str) -> float:
     parsed = float(value)
@@ -213,7 +221,7 @@ def main() -> int:
     ddb_table = args.ddb_table or cfg.ddb_table
     event_ids = parse_event_ids(args.event_ids)
 
-    run_id = make_run_id()
+    run_id = resolve_run_id(make_run_id)
     stats = RunStats()
     progress_every = max(int(args.progress_every), 1)
 

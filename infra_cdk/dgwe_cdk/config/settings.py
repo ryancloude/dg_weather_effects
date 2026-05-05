@@ -26,6 +26,14 @@ class PipelineSettings:
     athena_source_scored_table: str
     athena_reporting_base_table: str
     production_training_request_fingerprint: str
+    pipeline_monitor_email_from: str
+    pipeline_monitor_email_to: str
+    pipeline_monitor_ses_identity: str
+    pipeline_monitor_ses_region: str
+    pipeline_monitor_metric_delay_seconds: int
+    pipeline_monitor_athena_price_per_tb_scanned: float
+    pipeline_monitor_fargate_vcpu_price_per_second: float
+    pipeline_monitor_fargate_memory_gb_price_per_second: float
 
     @property
     def stack_prefix(self) -> str:
@@ -97,6 +105,14 @@ class PipelineSettings:
                 )
             return str(value).strip()
 
+        def resolve_int(name: str, default: int) -> int:
+            return int(resolve(name, str(default)))
+
+        def resolve_float(name: str, default: float) -> float:
+            return float(resolve(name, str(default)))
+
+        pipeline_monitor_email_from = resolve("PIPELINE_MONITOR_EMAIL_FROM")
+
         return cls(
             app_name=resolve("CDK_APP_NAME", "dgwe"),
             app_env=resolve("APP_ENV", "dev"),
@@ -127,5 +143,31 @@ class PipelineSettings:
             ),
             production_training_request_fingerprint=resolve(
                 "PRODUCTION_TRAINING_REQUEST_FINGERPRINT"
+            ),
+            pipeline_monitor_email_from=pipeline_monitor_email_from,
+            pipeline_monitor_email_to=resolve("PIPELINE_MONITOR_EMAIL_TO"),
+            pipeline_monitor_ses_identity=resolve(
+                "PIPELINE_MONITOR_SES_IDENTITY",
+                pipeline_monitor_email_from,
+            ),
+            pipeline_monitor_ses_region=resolve(
+                "PIPELINE_MONITOR_SES_REGION",
+                resolve("AWS_REGION"),
+            ),
+            pipeline_monitor_metric_delay_seconds=resolve_int(
+                "PIPELINE_MONITOR_METRIC_DELAY_SECONDS",
+                120,
+            ),
+            pipeline_monitor_athena_price_per_tb_scanned=resolve_float(
+                "PIPELINE_MONITOR_ATHENA_PRICE_PER_TB_SCANNED",
+                5.0,
+            ),
+            pipeline_monitor_fargate_vcpu_price_per_second=resolve_float(
+                "PIPELINE_MONITOR_FARGATE_VCPU_PRICE_PER_SECOND",
+                0.000011244,
+            ),
+            pipeline_monitor_fargate_memory_gb_price_per_second=resolve_float(
+                "PIPELINE_MONITOR_FARGATE_MEMORY_GB_PRICE_PER_SECOND",
+                0.000001235,
             ),
         )

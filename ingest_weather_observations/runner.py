@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
+import os
+
 
 from ingest_weather_observations.config import load_config
 from ingest_weather_observations.dynamo_reader import (
@@ -98,6 +100,11 @@ def probability(value: str) -> float:
         raise argparse.ArgumentTypeError("value must be between 0.0 and 1.0")
     return parsed
 
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 def parse_args():
     p = argparse.ArgumentParser(description="Ingest Open-Meteo archive observations to Bronze S3 + DynamoDB state.")
@@ -426,7 +433,7 @@ def main() -> int:
     session = build_session(http_cfg)
     geocode_memo: dict[str, GeoPoint | None] = {}
 
-    run_id = make_run_id()
+    run_id = resolve_run_id(make_run_id)
     stats = RunStats()
     progress_every = max(int(args.progress_every), 1)
 

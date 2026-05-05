@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from aws_cdk import Duration
 from aws_cdk import Stack
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
+from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_ses as ses
 from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
@@ -158,6 +163,105 @@ class PipelineOrchestrationStack(Stack):
             )
         )
 
+        self.pipeline_monitor_email_identity = ses.CfnEmailIdentity(
+            self,
+            "PipelineMonitorSesIdentity",
+            email_identity=settings.pipeline_monitor_ses_identity,
+        )
+
+        monitor_code_path = Path(__file__).resolve().parents[3] / "pipeline_monitor"
+        self.pipeline_monitor_function = lambda_.Function(
+            self,
+            "PipelineRunMonitorFunction",
+            function_name=f"{settings.resource_prefix}-pipeline-run-monitor",
+            runtime=lambda_.Runtime.PYTHON_3_11,
+            handler="lambda_handler.handler",
+            code=lambda_.Code.from_asset(str(monitor_code_path)),
+            timeout=Duration.minutes(10),
+            memory_size=512,
+            environment={
+                "PDGA_DDB_TABLE": shared.event_index_table.table_name,
+                "PIPELINE_MONITOR_EMAIL_FROM": settings.pipeline_monitor_email_from,
+                "PIPELINE_MONITOR_EMAIL_TO": settings.pipeline_monitor_email_to,
+                "PIPELINE_MONITOR_SES_REGION": settings.pipeline_monitor_ses_region,
+                "PIPELINE_MONITOR_METRIC_DELAY_SECONDS": str(
+                    settings.pipeline_monitor_metric_delay_seconds
+                ),
+                "PIPELINE_MONITOR_ATHENA_PRICE_PER_TB_SCANNED": str(
+                    settings.pipeline_monitor_athena_price_per_tb_scanned
+                ),
+                "PIPELINE_MONITOR_FARGATE_VCPU_PRICE_PER_SECOND": str(
+                    settings.pipeline_monitor_fargate_vcpu_price_per_second
+                ),
+                "PIPELINE_MONITOR_FARGATE_MEMORY_GB_PRICE_PER_SECOND": str(
+                    settings.pipeline_monitor_fargate_memory_gb_price_per_second
+                ),
+            },
+        )
+        self.pipeline_monitor_function.node.add_dependency(
+            self.pipeline_monitor_email_identity
+        )
+
+        shared.event_index_table.grant_read_data(self.pipeline_monitor_function)
+
+        self.pipeline_monitor_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="StepFunctionsExecutionRead",
+                actions=[
+                    "states:DescribeExecution",
+                    "states:GetExecutionHistory",
+                ],
+                resources=["*"],
+            )
+        )
+        self.pipeline_monitor_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="CloudWatchMetricRead",
+                actions=[
+                    "cloudwatch:GetMetricData",
+                ],
+                resources=["*"],
+            )
+        )
+        self.pipeline_monitor_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="EcsDescribeTasks",
+                actions=[
+                    "ecs:DescribeTasks",
+                ],
+                resources=["*"],
+            )
+        )
+        self.pipeline_monitor_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="SesSendEmail",
+                actions=[
+                    "ses:SendEmail",
+                    "ses:SendRawEmail",
+                ],
+                resources=["*"],
+            )
+        )
+
+        self.pipeline_monitor_rule = events.Rule(
+            self,
+            "PipelineMonitorRule",
+            event_pattern=events.EventPattern(
+                source=["aws.states"],
+                detail_type=["Step Functions Execution Status Change"],
+                detail={
+                    "stateMachineArn": [
+                        self.state_machine.state_machine_arn,
+                        self.weekly_retrain_state_machine.state_machine_arn,
+                    ],
+                    "status": ["SUCCEEDED", "FAILED", "TIMED_OUT", "ABORTED"],
+                },
+            ),
+        )
+        self.pipeline_monitor_rule.add_target(
+            targets.LambdaFunction(self.pipeline_monitor_function)
+        )
+
     def _build_pipeline_definition(
         self,
         *,
@@ -182,7 +286,7 @@ class PipelineOrchestrationStack(Stack):
 
         mark_failed = tasks.DynamoUpdateItem(
             self,
-            f"{definition_prefix}MarkRunFailed",
+            f"{definitionPrefix}MarkRunFailed" if False else f"{definition_prefix}MarkRunFailed",
             table=self.shared.pipeline_runs_table,
             key={
                 "run_id": tasks.DynamoAttributeValue.from_string(
@@ -303,7 +407,9 @@ class PipelineOrchestrationStack(Stack):
                     "--force-train",
                     "--set-production-fingerprint",
                     "--production-fingerprint-parameter-name",
-                    self.settings.parameter_name("PRODUCTION_TRAINING_REQUEST_FINGERPRINT"),
+                    self.settings.parameter_name(
+                        "PRODUCTION_TRAINING_REQUEST_FINGERPRINT"
+                    ),
                     *base,
                 ]
             if definition.job_name == "score_round_wind_model":

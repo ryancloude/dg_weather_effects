@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import itertools
 import logging
+import os
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable
 
 import requests
@@ -22,8 +23,8 @@ from ingest_pdga_event_pages.dynamo_writer import (
 )
 from ingest_pdga_event_pages.event_page_parser import parse_event_page
 from ingest_pdga_event_pages.http_client import HttpConfig, build_session, get_event_page_html, polite_sleep
+from ingest_pdga_event_pages.run_summary import put_event_pages_run_summary
 from ingest_pdga_event_pages.s3_writer import put_event_page_raw
-
 
 logger = logging.getLogger("pdga_ingest")
 
@@ -49,7 +50,7 @@ class ProcessResult:
     s3_ptrs: Dict[str, Any]
     ddb_attrs: Dict[str, Any]
     unchanged: bool
-    change_type: str  # "new" | "updated" | "unchanged" | "unknown"
+    change_type: str
 
 
 @dataclass
@@ -87,6 +88,18 @@ class RunStats:
         if attempted == 0:
             return 0.0
         return self.failed / attempted
+
+
+def make_run_id() -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"event-pages-{ts}"
+
+
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 
 def positive_int(value: str) -> int:
@@ -176,7 +189,12 @@ def resolve_incremental_statuses(args) -> list[str]:
     return list(DEFAULT_INCREMENTAL_STATUSES)
 
 
-def update_no_event_streak(current_streak: int, *, is_unscheduled_placeholder: bool = False, is_not_found_404: bool = False) -> int:
+def update_no_event_streak(
+    current_streak: int,
+    *,
+    is_unscheduled_placeholder: bool = False,
+    is_not_found_404: bool = False,
+) -> int:
     if is_unscheduled_placeholder or is_not_found_404:
         return current_streak + 1
     return 0
@@ -454,7 +472,7 @@ def main() -> int:
     session = build_session(http_cfg)
 
     total = RunStats()
-    run_id = f"event-pages-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    run_id = resolve_run_id(make_run_id)
     progress_every = max(args.progress_every, 1)
 
     if args.incremental:
@@ -582,16 +600,34 @@ def main() -> int:
         total.merge(stats)
 
     exit_nonzero = should_exit_nonzero(stats=total, max_failure_rate=args.max_failure_rate)
-    logger.info(
-        "summary",
-        extra={
-            **total.to_dict(),
-            "attempted_total": total.attempted_total(),
-            "failure_rate": round(total.failure_rate(), 4),
-            "max_failure_rate": args.max_failure_rate,
-            "exit_nonzero": exit_nonzero,
-        },
+    run_mode = (
+        "incremental"
+        if bool(args.incremental)
+        else "backfill"
+        if args.backfill_start_id is not None
+        else "explicit"
     )
+    final_summary = {
+        "run_id": run_id,
+        "run_mode": run_mode,
+        **total.to_dict(),
+        "attempted_total": total.attempted_total(),
+        "failure_rate": round(total.failure_rate(), 4),
+        "max_failure_rate": args.max_failure_rate,
+        "exit_nonzero": exit_nonzero,
+    }
+
+    logger.info("summary", extra=final_summary)
+    print({"summary": final_summary})
+
+    if not args.dry_run:
+        put_event_pages_run_summary(
+            table_name=app_cfg.ddb_table,
+            run_id=run_id,
+            stats=final_summary,
+            aws_region=app_cfg.aws_region,
+        )
+
     return 2 if exit_nonzero else 0
 
 

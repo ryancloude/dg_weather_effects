@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+import os
 
 from silver_weather_observations.bronze_io import (
     build_weather_round_sources,
@@ -25,6 +26,8 @@ from silver_weather_observations.models import OBS_PK_COLS, OBS_TIEBREAK_COLS
 from silver_weather_observations.normalize import normalize_event_records
 from silver_weather_observations.parquet_io import overwrite_event_table, put_quarantine_report
 from silver_weather_observations.quality import validate_quality
+
+
 
 logger = logging.getLogger("silver_weather_observations")
 
@@ -65,6 +68,11 @@ def probability(value: str) -> float:
         raise argparse.ArgumentTypeError("value must be between 0.0 and 1.0")
     return parsed
 
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 def parse_args():
     p = argparse.ArgumentParser(description="Build Silver weather observations_hourly from Bronze weather payloads.")
@@ -183,7 +191,8 @@ def main() -> int:
     ddb_table = args.ddb_table or cfg.ddb_table
     event_ids = parse_event_ids(args.event_ids)
 
-    run_id = make_run_id()
+    run_id = resolve_run_id(make_run_id)
+
     stats = RunStats()
     progress_every = max(int(args.progress_every), 1)
 

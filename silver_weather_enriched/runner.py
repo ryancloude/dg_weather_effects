@@ -4,6 +4,7 @@ import argparse
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 
 from silver_weather_enriched.config import load_config
 from silver_weather_enriched.dynamo_io import (
@@ -24,6 +25,8 @@ from silver_weather_enriched.join import (
 from silver_weather_enriched.parquet_io import overwrite_event_tables, put_quarantine_report
 from silver_weather_enriched.quality import validate_enriched_quality
 from silver_weather_enriched.silver_io import load_event_input_tables
+
+
 
 logger = logging.getLogger("silver_weather_enriched")
 
@@ -134,6 +137,11 @@ def _is_pending_event(
         return fp == ""
     return True
 
+def resolve_run_id(default_factory) -> str:
+    env_value = str(os.getenv("RUN_ID", "") or "").strip()
+    if env_value:
+        return env_value
+    return default_factory()
 
 def _event_year(candidate: EnrichedEventCandidate, round_rows: list[dict], hole_rows: list[dict]) -> int:
     if candidate.event_year > 0:
@@ -172,7 +180,8 @@ def main() -> int:
     ddb_table = args.ddb_table or cfg.ddb_table
     event_ids = parse_event_ids(args.event_ids)
 
-    run_id = make_run_id()
+    run_id = resolve_run_id(make_run_id)
+
     stats = RunStats()
     progress_every = max(int(args.progress_every), 1)
 
