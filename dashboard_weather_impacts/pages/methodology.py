@@ -170,6 +170,16 @@ def _inject_methodology_styles() -> None:
             color: #5b6170;
         }
 
+        .method-note-body a {
+            color: #8a4b10;
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        .method-note-body a:hover {
+            text-decoration: underline;
+        }
+
         @media (max-width: 1100px) {
             .method-grid-4 {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -207,6 +217,19 @@ def render_methodology() -> None:
                 The goal of this project is not just to describe windy rounds. It is to estimate how much wind and other
                 weather conditions change expected scoring difficulty after accounting for event, layout, and round-level
                 context. The result is a model-based view of weather impact expressed in strokes.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="method-note">
+            <div class="method-note-title">Project Repository</div>
+            <div class="method-note-body">
+                View the full project, pipeline code, and documentation on
+                <a href="https://github.com/ryancloude/dg_weather_effects" target="_blank" rel="noopener noreferrer">GitHub</a>.
             </div>
         </div>
         """,
