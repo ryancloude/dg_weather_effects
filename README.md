@@ -1,164 +1,121 @@
-**Plan**
-- Draft a hiring-focused `README.md` that sells the project quickly and still holds up technically.
-- Make the README the front door for three audiences: recruiter, hiring manager, and technical interviewer.
-- Use it to point into the deeper docs structure we already agreed on.
+# Disc Golf Weather Effects
 
-## Full file: `README.md`
-
-```md
-# Disc Golf Wind Effects
-
-An AWS-native data platform and analytics project that estimates how weather, especially wind, changes disc golf scoring difficulty.
-
-This project ingests PDGA tournament data and historical weather observations, builds Bronze/Silver/Gold datasets in S3, trains a production-style round-level model, scores events, publishes analytical reporting tables, and serves an interactive Streamlit dashboard. The goal is to answer a deceptively simple question with reproducible data engineering and model-based analysis:
-
-**How many strokes does wind add, under what conditions, and where does it matter most?**
-
-## Why This Project Exists
-
-Weather clearly affects disc golf, but measuring that impact well is hard.
-
-Raw scoring alone is not enough because observed scores are also influenced by:
-
-- course and layout difficulty
-- player skill
-- division differences
-- event timing
-- temperature and precipitation
-- missing or inconsistent source data
-
-This project treats that as a real analytics engineering problem rather than a one-off notebook exercise. It builds a replayable pipeline, aligns weather to event timing and location, creates stable analytical datasets, and uses model-based expected scoring to estimate how weather changes round performance.
-
-## What This Project Demonstrates
-
-This repository is designed to show practical, portfolio-grade skills across data engineering, analytics engineering, and data science:
-
-- building idempotent ingestion and transformation pipelines
-- modeling Bronze / Silver / Gold data layers
-- storing raw and analytical data in S3 as replayable artifacts
-- orchestrating AWS-native workflows with Step Functions and EventBridge
-- tracking checkpoints, run summaries, and pipeline metadata in DynamoDB
-- training and scoring a production-style round-level model
-- publishing analytical outputs for dashboards and investigation
-- monitoring pipeline runs with timing, counts, metrics, utilization, and estimated cost
-- presenting results through a Streamlit dashboard
-
-## Project Question
-
-The main business / analytical question is:
-
-**How much does wind increase scoring difficulty in disc golf, and how does that vary by event, venue, player context, and weather conditions?**
-
-Supporting questions include:
-
-- Which events or venues are most weather-sensitive?
-- How does weather impact vary by division or player skill level?
-- Under what wind or temperature conditions does scoring move the most?
-- Can a model-based expected score provide a cleaner baseline than raw comparisons alone?
+How much does weather change disc golf scoring? This project combines PDGA tournament data with historical weather observations to estimate how conditions like wind, temperature, and precipitation affect player performance. I built an AWS-based pipeline and dashboard that turns raw event and weather data into analysis-ready datasets, model-based expectations, and interactive reporting.
 
 ## Live Dashboard
 
-- Streamlit dashboard: `TODO: add deployed Streamlit URL`
-- Main app entrypoint: `streamlit_app.py`
-- Dashboard package: `dashboard_weather_impacts/`
+The public-facing part of the project is an interactive Streamlit dashboard:
 
-The dashboard reads published Gold reporting tables and scored-round outputs from S3 and provides views for:
+[discgolfweathereffects.streamlit.app](https://discgolfweathereffects.streamlit.app/)
 
-- overview trends
-- geography
-- event exploration
-- methodology / interpretation
+The dashboard is designed to make the project easier to explore without reading the code or pipeline outputs directly. It brings together the published reporting tables into a few focused views:
+
+- **Overview**: high-level patterns in overall weather impact
+- **Geography**: where weather effects appear strongest across locations
+- **Event Explorer**: event-level breakdowns and deeper inspection
+- **Methodology**: how the estimates are built and how to interpret them
 
 ## Architecture
 
-### High-level flow
+### System Flow
 
-```mermaid
-flowchart LR
-    A[PDGA Event Pages] --> B[Bronze S3 Raw]
-    C[PDGA Live Results API] --> B
-    D[Open-Meteo Historical Weather] --> B
+The project starts by collecting tournament metadata, round results, and historical weather data. Raw source snapshots are stored first, then transformed into cleaned datasets, then into analysis-ready datasets used for modeling, reporting, and the dashboard.
 
-    B --> E[Silver Live Results]
-    B --> F[Silver Weather Observations]
-    E --> G[Silver Weather Enriched]
-
-    G --> H[Gold Wind Effects]
-    G --> I[Gold Wind Model Inputs]
-
-    I --> J[Train Round Wind Model]
-    I --> K[Score Round Wind Model]
-
-    H --> L[Published Reporting Tables]
-    K --> L
-    L --> M[Streamlit Dashboard]
-
-    N[Step Functions + EventBridge] --> B
-    N --> E
-    N --> F
-    N --> G
-    N --> H
-    N --> I
-    N --> J
-    N --> K
-    N --> L
-
-    O[DynamoDB Metadata + Checkpoints] --> N
-    O --> B
-    O --> E
-    O --> F
-    O --> G
-    O --> H
-    O --> I
-    O --> J
-    O --> K
-
-    P[Pipeline Monitor Lambda + SES] --> Q[Run Summary Email]
-    N --> P
+```text
+PDGA event data + weather data
+            ↓
+      Raw source snapshots
+            ↓
+   Cleaned / standardized data
+            ↓
+   Analysis-ready datasets
+            ↓
+ Model predictions + reporting tables
+            ↓
+      Streamlit dashboard
 ```
 
-### Core AWS services
+### AWS Services Used
 
-- `S3` for Bronze, Silver, Gold, model artifacts, and dashboard/report outputs
-- `DynamoDB` for metadata, checkpoints, and run summaries
-- `ECS Fargate` for pipeline job execution
-- `Step Functions` for orchestration
-- `EventBridge` for scheduled triggers and post-run monitoring triggers
-- `Athena` for reporting-table refreshes and analytical table access
-- `Lambda + SES` for pipeline monitoring email delivery
-- `Streamlit Community Cloud` for dashboard delivery
+- **S3** stores raw source data, cleaned datasets, model artifacts, and dashboard/reporting outputs
+- **DynamoDB** tracks checkpoints, metadata, and run summaries
+- **ECS Fargate** runs the ingestion, transformation, modeling, and reporting jobs
+- **Step Functions** orchestrates the pipeline jobs
+- **EventBridge** triggers scheduled workflows and post-run monitoring
+- **Athena** supports reporting-table refreshes and analytical querying
+- **Lambda** powers post-run monitoring and summary generation
+- **SES** sends automated monitoring emails after pipeline runs
 
-## Pipeline Layers
+### Technical Highlights
+
+- **Replayable raw data**  
+  Raw source snapshots are stored in S3 so the pipeline can be audited and rerun without relying only on current source behavior.
+
+- **Idempotent pipeline design**  
+  Jobs are built to be safe to rerun, which matters for both scheduled processing and backfills.
+
+- **Checkpointed processing**  
+  DynamoDB is used to track job state, run summaries, and event-level progress.
+
+- **Layered data model**  
+  Bronze, Silver, and Gold layers separate raw ingestion from cleaned outputs and analysis-ready datasets.
+
+- **Model-backed analysis**  
+  The project does not rely only on raw score comparisons. It uses a round-level model to estimate expected outcomes and study how weather shifts those expectations.
+
+- **Operational monitoring**  
+  Pipeline runs are summarized automatically with timing, event counts, resource usage, and estimated cost.
+
+- **Public-facing delivery**  
+  The analytical outputs are surfaced through a deployed dashboard rather than staying buried in notebooks.
+
+
+## Data Pipeline
+
+The project is organized into three main data layers.
 
 ### Bronze
-Replayable raw source snapshots with fetch metadata.
 
-Examples:
-- PDGA event HTML
-- PDGA live-results JSON
-- Open-Meteo archive weather JSON
+The Bronze layer stores replayable raw source snapshots. This is the first landing point for external data and preserves the original source responses for auditing, debugging, and reprocessing.
+
+Examples include:
+
+- PDGA event pages
+- PDGA live-results payloads
+- historical weather responses
 
 ### Silver
-Typed, cleaned, normalized datasets with stable schemas and validation steps.
 
-Examples:
-- player rounds
-- player holes
-- normalized hourly weather observations
-- weather-enriched round and hole data
+The Silver layer contains cleaned and standardized datasets. This is where raw source data is parsed, normalized, typed, and aligned into stable analytical structures.
+
+Examples include:
+
+- round-level results
+- hole-level results
+- hourly weather observations
+- weather-enriched event data
 
 ### Gold
-Analytics-ready datasets, features, scored outputs, and reporting tables.
 
-Examples:
-- weather impact fact tables
-- model-input round dataset
-- scored round outputs
-- dashboard reporting aggregates
+The Gold layer contains analysis-ready datasets used for reporting and modeling. These outputs are designed to be easier to query, compare, and reuse across the project.
 
-## Current Pipeline Jobs
+Examples include:
 
-### Incremental / recurring pipeline
+- round-level model inputs and round-level model outputs
+- published dashboard tables
+
+### Modeling and Reporting
+
+The final layer turns the prepared data into model predictions, reporting tables, and dashboard outputs. This is where the project moves from data preparation into analysis delivery.
+
+## Pipeline Jobs
+
+The project is split into two scheduled workflows.
+
+### Daily Pipeline
+
+This pipeline pulls new data from the source systems, applies incremental updates to the downstream data layers, generates model predictions for the newly available data, and republishes the reporting tables used by the dashboard.
+
 - `ingest_pdga_event_pages`
 - `ingest_pdga_live_results`
 - `silver_pdga_live_results`
@@ -170,195 +127,134 @@ Examples:
 - `score_round_wind_model`
 - `report_round_weather_impacts`
 
-### Weekly retrain pipeline
+### Weekly Model Refresh Pipeline
+
+This pipeline retrains the round-level model and republishes the downstream prediction and reporting outputs.
+
 - `train_round_wind_model`
 - `score_round_wind_model`
 - `report_round_weather_impacts`
 
-These jobs are orchestrated in AWS Step Functions and designed to be idempotent, observable, and safe to rerun.
+Both pipelines are orchestrated in AWS with Step Functions and EventBridge.
 
-## Data Products
+## Monitoring
 
-The project currently produces several important analytical artifacts:
+Both pipelines include automated post-run monitoring.
 
-- replayable raw source snapshots in S3
-- normalized Silver parquet datasets
-- Gold weather/scoring datasets
-- round-level model-input features
-- versioned training artifacts
-- scored round outputs with prediction metadata
-- published reporting tables for dashboard consumption
-- pipeline monitoring summaries delivered by email
+Each run produces an email summary that includes:
 
-## Modeling Approach
+- how long each job took
+- total pipeline runtime
+- processed and failed event counts
+- model error metrics for prediction jobs
+- average and peak CPU and memory utilization
+- estimated cost by job and for the full pipeline
 
-The current production modeling direction is a **round-level one-stage model**.
+The goal is to make pipeline runs easier to understand at a glance and easier to debug when something goes wrong.
 
-At a high level:
 
-- the model is trained on Gold round-level feature inputs
-- it predicts round scoring expectation using course, player, and context features
-- scored outputs can be compared against observed scores to estimate weather-related scoring shifts
-- evaluation metrics include run-level `RMSE` and `MAE` for scoring jobs
+## Running the Project
 
-This project is intentionally structured so the data platform and the analytical model can evolve independently. The modeling layer sits on top of stable data contracts rather than tightly coupled notebook-only logic.
+The pipelines are meant to run in AWS, but each job can also be built and tested locally with Docker.
 
-## Monitoring and Observability
+### Run a job locally with Docker
 
-The project includes automated pipeline monitoring designed to feel production-style rather than notebook-style.
+Each pipeline job has its own Dockerfile and entrypoint script. In practice, that means you can build an image for a job and then run it by passing the normal CLI arguments directly to the container.
 
-After each pipeline run, the monitoring layer can summarize:
+Example: build and run the event-page ingestion job locally
 
-- job duration
-- total pipeline duration
-- processed and failed counts by job
-- scoring `RMSE` and `MAE`
-- average and peak CPU utilization
-- average and peak memory utilization
-- estimated Fargate cost by job
-- estimated Athena cost by job
-- total estimated pipeline cost
-
-These summaries are formatted into an HTML table and sent by email through SES.
-
-This is an important part of the project because it shows operational thinking, not just transformation logic.
-
-## Dashboard
-
-The Streamlit dashboard is the user-facing layer for exploring the analytical outputs.
-
-Current dashboard sections include:
-
-- `Overview`
-- `Geography`
-- `Event Explorer`
-- `Methodology`
-
-The dashboard is backed by published reporting tables in S3 and uses `boto3`, `pandas`, `pyarrow`, `plotly`, and `streamlit` to query, load, and visualize results.
-
-## Repository Structure
-
-```text
-dg_wind_effects/
-├── dashboard_weather_impacts/
-├── docs/
-├── docker/
-├── gold_wind_effects/
-├── gold_wind_model_inputs/
-├── ingest_pdga_event_pages/
-├── ingest_pdga_live_results/
-├── ingest_weather_observations/
-├── infra_cdk/
-├── report_round_weather_impacts/
-├── score_round_wind_model/
-├── silver_pdga_live_results/
-├── silver_weather_enriched/
-├── silver_weather_observations/
-├── tests/
-├── train_round_wind_model/
-├── streamlit_app.py
-└── pyproject.toml
+```
+docker build -f .\docker\dockerfiles\Dockerfile.event_pages -t dgwe/ingest-pdga-event-pages .
+docker run --rm dgwe/ingest-pdga-event-pages --incremental
 ```
 
-## Technical Highlights
+Example: build and run the model training job locally
 
-A few implementation choices that matter in this project:
-
-- **Idempotent ingestion:** jobs are designed to be rerun without duplicating outputs
-- **Replayable Bronze layer:** raw source snapshots are stored in S3 for audit and reprocessing
-- **Checkpointed processing:** DynamoDB tracks job state, run summaries, and event-level status
-- **Environment-driven orchestration:** Step Functions injects shared run metadata into ECS tasks
-- **Production-style scoring:** training artifacts and scoring requests use fingerprinted metadata
-- **Operational monitoring:** pipeline runs generate structured, human-readable monitoring output
-- **Separate dashboard layer:** published analytical outputs are consumed by a deployable app
-
-## Quick Start
-
-### 1. Create and activate a virtual environment
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```
+docker build -f .\docker\dockerfiles\Dockerfile.train_round_wind_model -t dgwe/train-round-wind-model .
+docker run --rm dgwe/train-round-wind-model --log-level INFO
 ```
 
-### 2. Install dependencies
+Example: build and run the prediction job locally
 
-```powershell
-python -m pip install --upgrade pip
-pip install -e .
+```
+docker build -f .\docker\dockerfiles\Dockerfile.score_round_wind_model -t dgwe/score-round-wind-model .
+docker run --rm dgwe/score-round-wind-model --log-level INFO
 ```
 
-For local dashboard-only work, you can also install from `requirements.txt` if you are using the lighter Streamlit deployment dependency path.
+Example: build and run the reporting job locally
 
-### 3. Configure environment variables
-
-At minimum, most jobs use variables like:
-
-```dotenv
-PDGA_S3_BUCKET=...
-PDGA_DDB_TABLE=...
-AWS_REGION=us-east-2
+```
+docker build -f .\docker\dockerfiles\Dockerfile.report_round_weather_impacts -t dgwe/report-round-weather-impacts .
+docker run --rm dgwe/report-round-weather-impacts --log-level INFO
 ```
 
-Additional jobs require Athena and model-specific settings such as:
+### Deploy to AWS
 
-```dotenv
-ATHENA_DATABASE=...
-ATHENA_WORKGROUP=...
-ATHENA_RESULTS_S3_URI=s3://.../query-results/
-ATHENA_SOURCE_SCORED_TABLE=...
-ATHENA_REPORTING_BASE_TABLE=...
-PRODUCTION_TRAINING_REQUEST_FINGERPRINT=...
+Build and publish the pipeline images to ECR:
+
+```
+powershell -File .\infra_cdk\scripts\publish_pipeline_images.ps1 -ImageTag latest
 ```
 
-### 4. Run a job locally
+Deploy the shared infrastructure and orchestration stacks:
 
-Example:
-
-```powershell
-python -m ingest_pdga_event_pages.runner --incremental
+```
+cd .\infra_cdk
+cdk deploy dgwe-dev-Shared dgwe-dev-Orchestration
 ```
 
-### 5. Run the dashboard locally
+The dashboard is deployed separately through Streamlit Community Cloud and reads the published reporting tables from S3.
 
-```powershell
-streamlit run .\streamlit_app.py
-```
+## How the Repo Is Organized
 
-## Example Commands
+Instead of splitting the project into a single monolithic pipeline, the repo is organized by stage and responsibility.
 
-### Incremental event-page ingestion
+- `ingest_*`
+  - source collection jobs for PDGA and weather data
 
-```powershell
-python -m ingest_pdga_event_pages.runner --incremental
-```
+- `silver_*`
+  - cleaning, standardization, and enrichment jobs
 
-### Historical live-results ingest
+- `gold_*`
+  - analysis-ready datasets and model-input preparation
 
-```powershell
-python -m ingest_pdga_live_results.runner --historical-backfill
-```
+- `train_round_wind_model`
+  - model training workflow
 
-### Silver live-results transform
+- `score_round_wind_model`
+  - prediction workflow used to compare expected versus actual round outcomes
 
-```powershell
-python -m silver_pdga_live_results.runner --run-mode pending_only --progress-every 25
-```
+- `report_round_weather_impacts`
+  - reporting-table generation for the dashboard
 
-### Train the round-level model
+- `dashboard_weather_impacts`
+  - Streamlit application
 
-```powershell
-python -m train_round_wind_model.runner --log-level INFO
-```
+- `infra_cdk`
+  - AWS infrastructure definitions
 
-### Score events with the current production model
+- `tests`
+  - automated validation for pipeline components
 
-```powershell
-python -m score_round_wind_model.runner --log-level INFO
-```
+- `wind_impact_analysis`
+  - Anallysis of weather effects and modeling expirements
 
-### Refresh dashboard reporting outputs
+- `docs`
+  - architecture, data model, pipeline, modeling, monitoring, and results documentation
 
-```powershell
-python -m report_round_weather_impacts.runner --log-level INFO
-``'
+## Documentation
+
+The repository documentation is organized to make the project easier to understand from both a technical and analytical perspective.
+
+It includes:
+
+- `docs/01_architecture.md`
+- `docs/02_data_model.md`
+- `docs/03_pipeline_jobs.md`
+- `docs/04_modeling_and_analysis.md`
+- `docs/05_monitoring_and_operations.md`
+- `docs/06_setup_and_reproducibility.md`
+- `docs/07_results_and_findings.md`
+- `docs/08_design_decisions_and_tradeoffs.md`
+- `docs/appendix_code_walkthrough.md`
