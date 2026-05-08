@@ -15,6 +15,7 @@ from botocore.exceptions import ClientError
 DEFAULT_REQUIRED_HISTORICAL_STATUSES = (
     "Event complete; official ratings processed.",
     "Event complete; unofficial ratings processed.",
+    "Event report received; official ratings pending."
 )
 
 

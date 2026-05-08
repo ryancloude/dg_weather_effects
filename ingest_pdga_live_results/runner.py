@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable
 from urllib.parse import urlparse
+
 import boto3
+
 from ingest_pdga_event_pages.config import load_config
 from ingest_pdga_event_pages.http_client import HttpConfig, build_session, polite_sleep
 from ingest_pdga_live_results.dynamo_reader import LiveResultsTask, load_live_results_tasks
@@ -24,10 +26,8 @@ from ingest_pdga_live_results.s3_writer import put_live_results_raw
 
 logger = logging.getLogger("pdga_live_results_ingest")
 
-DEFAULT_HISTORICAL_BACKFILL_EXCLUDED_STATUSES = (
+DEFAULT_INCREMENTAL_EXCLUDED_STATUSES = (
     "Sanctioned",
-    "Event report received; official ratings pending.",
-    "Event complete; waiting for report.",
     "In progress.",
     "Errata pending.",
 )
@@ -71,13 +71,13 @@ def parse_args():
     p = argparse.ArgumentParser(description="Ingest PDGA live results API to Bronze S3 + state in DynamoDB")
     p.add_argument("--event-ids", help="Optional comma-separated event IDs, e.g. 86076,86077")
     p.add_argument(
-        "--historical-backfill",
+        "--incremental",
         action="store_true",
-        help="Backfill all METADATA events except excluded statuses, requiring non-empty division_rounds.",
+        help="Select completed METADATA events that are eligible for live-results ingestion, requiring non-empty division_rounds.",
     )
     p.add_argument(
-        "--historical-excluded-statuses",
-        help="Optional override for historical backfill excluded statuses, comma-separated.",
+        "--incremental-excluded-statuses",
+        help="Optional override for incremental excluded statuses, comma-separated.",
     )
     p.add_argument("--bucket")
     p.add_argument("--dry-run", action="store_true")
@@ -89,11 +89,13 @@ def parse_args():
     p.add_argument("--log-level", default="INFO")
     return p.parse_args()
 
+
 def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
     parsed = urlparse(s3_uri)
     if parsed.scheme != "s3" or not parsed.netloc or not parsed.path:
         raise ValueError(f"Invalid S3 URI: {s3_uri}")
     return parsed.netloc, parsed.path.lstrip("/")
+
 
 def resolve_run_id(default_factory) -> str:
     env_value = str(os.getenv("RUN_ID", "") or "").strip()
@@ -108,7 +110,6 @@ def load_event_ids_from_s3_uri(*, s3_uri: str, aws_region: str | None) -> list[i
     obj = s3.get_object(Bucket=bucket, Key=key)
     body = obj["Body"].read().decode("utf-8")
 
-    # Supports either newline-delimited IDs or comma-delimited CSV.
     raw_tokens = []
     for line in body.splitlines():
         raw_tokens.extend(line.split(","))
@@ -139,14 +140,14 @@ def parse_event_ids(raw: str | None) -> list[int] | None:
 def parse_status_list(raw_statuses: str) -> list[str]:
     values = [value.strip() for value in raw_statuses.split(",") if value.strip()]
     if not values:
-        raise ValueError("--historical-excluded-statuses requires at least one status_text value")
+        raise ValueError("--incremental-excluded-statuses requires at least one status_text value")
     return values
 
 
-def resolve_historical_excluded_statuses(args) -> list[str]:
-    if args.historical_excluded_statuses:
-        return parse_status_list(args.historical_excluded_statuses)
-    return list(DEFAULT_HISTORICAL_BACKFILL_EXCLUDED_STATUSES)
+def resolve_incremental_excluded_statuses(args) -> list[str]:
+    if args.incremental_excluded_statuses:
+        return parse_status_list(args.incremental_excluded_statuses)
+    return list(DEFAULT_INCREMENTAL_EXCLUDED_STATUSES)
 
 
 def make_run_id() -> str:
@@ -329,8 +330,8 @@ def run_task_sequence(
 def main() -> int:
     args = parse_args()
 
-    if args.historical_backfill and args.event_ids:
-        raise ValueError("Use either --historical-backfill or --event-ids, not both")
+    if args.incremental and args.event_ids:
+        raise ValueError("Use either --incremental or --event-ids, not both")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -350,22 +351,22 @@ def main() -> int:
     skip_events_with_live_results_state = False
     exclude_already_live_results_ingested = False
 
-    if args.historical_backfill:
-        excluded_statuses = resolve_historical_excluded_statuses(args)
+    if args.incremental:
+        excluded_statuses = resolve_incremental_excluded_statuses(args)
         require_non_empty_division_rounds = True
         use_status_end_date_gsi = True
         skip_events_with_live_results_state = False
         exclude_already_live_results_ingested = True
 
         logger.info(
-            "historical_backfill_mode",
+            "incremental_mode",
             extra={
                 "excluded_statuses": excluded_statuses,
                 "require_non_empty_division_rounds": True,
             },
         )
         logger.info(
-            "historical_backfill_controls",
+            "incremental_controls",
             extra={
                 "use_status_end_date_gsi": True,
                 "status_end_date_gsi_name": app_cfg.ddb_status_end_date_gsi,
@@ -394,7 +395,7 @@ def main() -> int:
         "live_results_run_plan",
         extra={
             "run_id": run_id,
-            "historical_backfill": bool(args.historical_backfill),
+            "incremental": bool(args.incremental),
             "total_events": total_events,
             "total_tasks": total_tasks,
             "dry_run": bool(args.dry_run),
@@ -405,7 +406,7 @@ def main() -> int:
         {
             "live_results_run_plan": {
                 "run_id": run_id,
-                "historical_backfill": bool(args.historical_backfill),
+                "incremental": bool(args.incremental),
                 "total_events": total_events,
                 "total_tasks": total_tasks,
                 "dry_run": bool(args.dry_run),

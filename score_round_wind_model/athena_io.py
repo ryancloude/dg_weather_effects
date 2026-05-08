@@ -276,9 +276,9 @@ def recreate_scored_rounds_table(
     table_location: str,
     storage_location_template: str,
     aws_region: str | None,
-    event_year_start: int = 2020,
-    event_year_end: int = 2035,
-    tourn_id_min: int = 1,
+    event_year_start: int = 2025,
+    event_year_end: int = 2030,
+    tourn_id_min: int = 900000,
     tourn_id_max: int = 2000000,
 ) -> dict[str, Any]:
     drop_sql = build_drop_table_sql(database=database, table_name=table_name)
